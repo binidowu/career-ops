@@ -2,7 +2,7 @@
 
 import { existsSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -195,10 +195,24 @@ function summarizeParagraphs(section) {
     .filter(Boolean);
 }
 
-function parseHeader(markdown) {
+function parseHeader(markdown, reportPath = "") {
   const titleMatch = /^#\s+Evaluation:\s+(.+?)\s+[—-]\s+(.+)$/m.exec(markdown);
-  const company = titleMatch?.[1]?.trim() ?? "Unknown Company";
-  const role = titleMatch?.[2]?.trim() ?? "Unknown Role";
+  const fileName = basename(reportPath, ".md");
+  const slugFallback = fileName.replace(/^\d+[-_]?/, "");
+  const companyFallback = slugFallback
+    .split("-")
+    .slice(0, 3)
+    .join(" ")
+    .trim();
+
+  const company =
+    titleMatch?.[1]?.trim() ||
+    companyFallback ||
+    "Unknown Company";
+  const role =
+    titleMatch?.[2]?.trim() ||
+    cleanText(extractMetadataValue(markdown, "Role")) ||
+    "Unknown Role";
 
   return {
     company,
@@ -209,6 +223,14 @@ function parseHeader(markdown) {
     url: /^\*\*URL:\*\*\s+(.+)$/m.exec(markdown)?.[1]?.trim() ?? "",
     legitimacy: /^\*\*Legitimacy:\*\*\s+(.+)$/m.exec(markdown)?.[1]?.trim() ?? "",
   };
+}
+
+function extractMetadataValue(markdown, label) {
+  const expression = new RegExp(
+    `^\\*\\*${label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}:\\*\\*\\s*(.+)$`,
+    "im",
+  );
+  return expression.exec(markdown)?.[1]?.trim() ?? "";
 }
 
 function parseRoleSummary(section) {
@@ -684,7 +706,7 @@ async function main() {
   }
 
   const reportMarkdown = await readFile(reportPath, "utf8");
-  const header = parseHeader(reportMarkdown);
+  const header = parseHeader(reportMarkdown, options.report);
   const roleSummarySection = extractSection(reportMarkdown, "A) Role Summary");
   const matchSection = extractSection(reportMarkdown, "B) Match with CV");
   const strategySection = extractSection(reportMarkdown, "C) Level and Strategy");
