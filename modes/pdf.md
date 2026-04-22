@@ -2,7 +2,10 @@
 
 ## Pipeline completo
 
-1. Lee `cv.md` como fuentes de verdad
+1. Lee el source resume seleccionado:
+   - Si `config/profile.yml` define `resume_sources`, usa `resume_sources[].path` según el `resume_id` pedido
+   - Si no hay selección explícita, usa la fuente marcada `default: true`
+   - Fallback: `cv.md` en la raíz del proyecto
 2. Pide al usuario el JD si no está en contexto (texto o URL)
 3. Extrae 15-20 keywords del JD
 4. Detecta idioma del JD → idioma del CV (EN default)

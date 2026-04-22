@@ -6,10 +6,31 @@ This is the single source of truth for your identity. All modes read from here.
 
 Key sections:
 - **candidate**: Name, email, phone, location, LinkedIn, portfolio
+- **resume_sources**: Optional list of multiple markdown resume sources
 - **target_roles**: Your North Star roles and archetypes
 - **narrative**: Your headline, exit story, superpowers, proof points
 - **compensation**: Target range, minimum, currency
 - **location**: Country, timezone, visa status, on-site availability
+
+### Multiple Resume Sources
+
+If you maintain more than one source resume, add them in `config/profile.yml`:
+
+```yaml
+resume_sources:
+  - id: general
+    label: General resume
+    path: cv.md
+    default: true
+  - id: frontend
+    label: Frontend resume
+    path: resumes/frontend.md
+    target_roles:
+      - Frontend Engineer
+      - Applied AI Frontend
+```
+
+The new `resume-draft.mjs` flow can resolve a resume by `id`, or fall back to the default source when no `resume_id` is provided.
 
 ## Target Roles (modes/_profile.md)
 

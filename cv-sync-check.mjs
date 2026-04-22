@@ -4,7 +4,7 @@
  * cv-sync-check.mjs — Validates that the career-ops setup is consistent.
  *
  * Checks:
- * 1. cv.md exists
+ * 1. A resume source exists (cv.md or configured resume_sources)
  * 2. config/profile.yml exists and has required fields
  * 3. No hardcoded metrics in _shared.md or batch/batch-prompt.md
  * 4. article-digest.md freshness (if exists)
@@ -14,25 +14,51 @@ import { readFileSync, existsSync, statSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 
+import yaml from 'js-yaml';
+
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const projectRoot = __dirname;
 
 const warnings = [];
 const errors = [];
+const profilePath = join(projectRoot, 'config', 'profile.yml');
 
-// 1. Check cv.md exists
+function resolveConfiguredResumePaths() {
+  if (!existsSync(profilePath)) {
+    return [];
+  }
+
+  try {
+    const profile = yaml.load(readFileSync(profilePath, 'utf8'));
+    const sources = Array.isArray(profile?.resume_sources) ? profile.resume_sources : [];
+
+    return sources
+      .map((entry) => String(entry?.path || '').trim())
+      .filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
+// 1. Check resume source exists
 const cvPath = join(projectRoot, 'cv.md');
-if (!existsSync(cvPath)) {
-  errors.push('cv.md not found in project root. Create it with your CV in markdown format.');
+const configuredResumePaths = resolveConfiguredResumePaths();
+const resolvedResumePath = existsSync(cvPath)
+  ? cvPath
+  : configuredResumePaths
+      .map((resumePath) => join(projectRoot, resumePath))
+      .find((resumePath) => existsSync(resumePath));
+
+if (!resolvedResumePath) {
+  errors.push('No resume source found. Create cv.md in the project root or configure resume_sources in config/profile.yml.');
 } else {
-  const cvContent = readFileSync(cvPath, 'utf-8');
-  if (cvContent.trim().length < 100) {
-    warnings.push('cv.md seems too short. Make sure it contains your full CV.');
+  const resumeContent = readFileSync(resolvedResumePath, 'utf-8');
+  if (resumeContent.trim().length < 100) {
+    warnings.push(`${resolvedResumePath.replace(`${projectRoot}/`, '')} seems too short. Make sure it contains your full CV.`);
   }
 }
 
 // 2. Check profile.yml exists
-const profilePath = join(projectRoot, 'config', 'profile.yml');
 if (!existsSync(profilePath)) {
   errors.push('config/profile.yml not found. Copy from config/profile.example.yml and fill in your details.');
 } else {
@@ -52,16 +78,14 @@ const filesToCheck = [
   { path: join(projectRoot, 'batch', 'batch-prompt.md'), name: 'batch-prompt.md' },
 ];
 
-// Pattern: numbers that look like hardcoded metrics (e.g., "170+ hours", "90% self-service")
 const metricPattern = /\b\d{2,4}\+?\s*(hours?|%|evals?|layers?|tests?|fields?|bases?)\b/gi;
 
 for (const { path, name } of filesToCheck) {
   if (!existsSync(path)) continue;
   const content = readFileSync(path, 'utf-8');
-
-  // Skip lines that are clearly instructions (contain "NEVER hardcode" etc.)
   const lines = content.split('\n');
-  for (let i = 0; i < lines.length; i++) {
+
+  for (let i = 0; i < lines.length; i += 1) {
     const line = lines[i];
     if (line.includes('NEVER hardcode') || line.includes('NUNCA hardcode') || line.startsWith('#') || line.startsWith('<!--')) continue;
     const matches = line.match(metricPattern);
@@ -81,7 +105,6 @@ if (existsSync(digestPath)) {
   }
 }
 
-// Output results
 console.log('\n=== career-ops sync check ===\n');
 
 if (errors.length === 0 && warnings.length === 0) {
@@ -89,11 +112,11 @@ if (errors.length === 0 && warnings.length === 0) {
 } else {
   if (errors.length > 0) {
     console.log(`ERRORS (${errors.length}):`);
-    errors.forEach(e => console.log(`  ERROR: ${e}`));
+    errors.forEach((error) => console.log(`  ERROR: ${error}`));
   }
   if (warnings.length > 0) {
     console.log(`\nWARNINGS (${warnings.length}):`);
-    warnings.forEach(w => console.log(`  WARN: ${w}`));
+    warnings.forEach((warning) => console.log(`  WARN: ${warning}`));
   }
 }
 

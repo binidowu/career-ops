@@ -25,9 +25,11 @@ cp config/profile.example.yml config/profile.yml
 
 Edit `config/profile.yml` with your personal details: name, email, target roles, narrative, proof points.
 
-### 3. Add your CV
+### 3. Add your resume source
 
-Create `cv.md` in the project root with your full CV in markdown format. This is the source of truth for all evaluations and PDFs.
+Create `cv.md` in the project root with your full resume in markdown format. This remains the default source of truth for evaluations and PDFs.
+
+If you want multiple source resumes, add them under `resumes/*.md` and list them in `config/profile.yml` under `resume_sources:`. Career-ops will then resolve the selected source resume by `id` instead of always reading `cv.md`.
 
 (Optional) Create `article-digest.md` with proof points from your portfolio projects/articles.
 

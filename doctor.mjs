@@ -5,9 +5,11 @@
  * Checks all prerequisites and prints a pass/fail checklist.
  */
 
-import { existsSync, mkdirSync, readdirSync } from 'fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
+
+import yaml from 'js-yaml';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const projectRoot = __dirname;
@@ -62,15 +64,48 @@ async function checkPlaywright() {
   }
 }
 
+function resolveConfiguredResumePaths() {
+  const profilePath = join(projectRoot, 'config', 'profile.yml');
+
+  if (!existsSync(profilePath)) {
+    return [];
+  }
+
+  try {
+    const profile = yaml.load(readFileSync(profilePath, 'utf8'));
+    const sources = Array.isArray(profile?.resume_sources) ? profile.resume_sources : [];
+
+    return sources
+      .map((entry) => String(entry?.path || '').trim())
+      .filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
 function checkCv() {
   if (existsSync(join(projectRoot, 'cv.md'))) {
     return { pass: true, label: 'cv.md found' };
   }
+
+  const configuredPaths = resolveConfiguredResumePaths();
+  const existingResumes = configuredPaths.filter((resumePath) =>
+    existsSync(join(projectRoot, resumePath))
+  );
+
+  if (existingResumes.length > 0) {
+    return {
+      pass: true,
+      label: `resume source${existingResumes.length === 1 ? '' : 's'} found (${existingResumes.length})`,
+    };
+  }
+
   return {
     pass: false,
-    label: 'cv.md not found',
+    label: 'No resume source found',
     fix: [
       'Create cv.md in the project root with your CV in markdown',
+      'Or add resume_sources to config/profile.yml and create the referenced resumes/*.md files',
       'See examples/ for reference CVs',
     ],
   };

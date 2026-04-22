@@ -16,6 +16,29 @@ candidate:
   # The ID starts with "D" and is 11 characters long.
   # canva_resume_design_id: "DAxxxxxxxxx"
 
+resume_sources:
+  # Optional: define multiple source resumes for different tracks.
+  # If omitted, career-ops falls back to the project-root cv.md.
+  - id: "general"
+    label: "General resume"
+    path: "cv.md"
+    default: true
+    target_roles:
+      - "AI/ML Engineer"
+      - "Solutions Architect"
+  # - id: "frontend"
+  #   label: "Frontend / product resume"
+  #   path: "resumes/frontend.md"
+  #   target_roles:
+  #     - "Frontend Engineer"
+  #     - "Applied AI Frontend"
+  # - id: "solutions"
+  #   label: "Solutions / forward deployed resume"
+  #   path: "resumes/solutions.md"
+  #   target_roles:
+  #     - "Solutions Engineer"
+  #     - "Forward Deployed Engineer"
+
 target_roles:
   # Your North Star roles — what you're optimizing for
   primary:
