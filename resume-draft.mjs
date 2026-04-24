@@ -186,8 +186,8 @@ function parseExperiences(section) {
       const [companyLine = "", roleLine = "", periodLine = ""] = lines;
       const bullets = lines
         .slice(3)
-        .filter((line) => line.startsWith("- "))
-        .map((line) => line.replace(/^- /, "").trim());
+        .filter((line) => /^[-•*◦]\s/.test(line))
+        .map((line) => line.replace(/^[-•*◦]\s+/, "").trim());
       const [company, location = ""] = companyLine.split(/\s+--\s+/);
 
       return {
@@ -263,16 +263,41 @@ function parseResumeMarkdown(markdown) {
     contact: parseHeaderContact(markdown),
     summary:
       extractSection(markdown, "Professional Summary") ||
-      extractSection(markdown, "Summary"),
-    experiences: parseExperiences(extractSection(markdown, "Work Experience")),
-    projects: parseProjects(extractSection(markdown, "Projects")),
-    education: parseEducation(extractSection(markdown, "Education")),
-    skills: parseSkills(extractSection(markdown, "Skills")),
+      extractSection(markdown, "Summary") ||
+      extractSection(markdown, "Profile") ||
+      extractSection(markdown, "About"),
+    experiences: parseExperiences(
+      extractSection(markdown, "Work Experience") ||
+      extractSection(markdown, "Experience") ||
+      extractSection(markdown, "Professional Experience") ||
+      extractSection(markdown, "Employment History") ||
+      extractSection(markdown, "Employment"),
+    ),
+    projects: parseProjects(
+      extractSection(markdown, "Projects") ||
+      extractSection(markdown, "Personal Projects") ||
+      extractSection(markdown, "Side Projects") ||
+      "",
+    ),
+    education: parseEducation(
+      extractSection(markdown, "Education") ||
+      extractSection(markdown, "Academic Background") ||
+      "",
+    ),
+    skills: parseSkills(
+      extractSection(markdown, "Skills") ||
+      extractSection(markdown, "Technical Skills") ||
+      extractSection(markdown, "Core Skills") ||
+      extractSection(markdown, "Core Competencies") ||
+      extractSection(markdown, "Technologies") ||
+      "",
+    ),
   };
 }
 
 function parseReportSections(markdown) {
-  const matches = [...markdown.matchAll(/^##\s+([A-Z])\s+—\s+(.+)$/gm)];
+  // Match "## A) Heading" or "## A — Heading" or "## A – Heading" formats
+  const matches = [...markdown.matchAll(/^##\s+([A-Z])\s*[)—–\-]\s*(.+)$/gm)];
 
   return matches.map((match, index) => {
     const start = match.index + match[0].length;
@@ -286,10 +311,17 @@ function parseReportSections(markdown) {
 }
 
 function extractReportKeywords(report, resume) {
+  // Use the ATS keywords section when present — highest-quality signal in the report
+  if (report.atsKeywords.length > 0) {
+    return unique(report.atsKeywords).slice(0, 10);
+  }
+
+  // Fallback: scan report text for skill matches
   const reportText = [
     report.role,
     report.company,
     report.summary,
+    report.tldr,
     ...report.sections.map((section) => section.body),
   ]
     .filter(Boolean)
@@ -310,32 +342,59 @@ function extractReportKeywords(report, resume) {
 }
 
 function parseReportMarkdown(markdown) {
-  const titleMatch = /^#\s+Evaluation Report\s+—\s+(.+?)\s+@\s+(.+)$/m.exec(markdown);
-  const sections = parseReportSections(markdown);
-  const summarySection =
-    sections.find((section) => section.key === "B")?.body ||
-    sections.find((section) => section.key === "F")?.body ||
-    "";
+  // Title format: "# Evaluation: Company — Role" (company first, then role after dash)
+  const titleMatch =
+    /^#\s+Evaluation[:\s]+(.+?)\s+[—–]\s+(.+)$/m.exec(markdown);
 
+  const sections = parseReportSections(markdown);
+
+  // Summary: first substantive paragraph from section B, skipping tables and bold-key lines
+  const bSection = sections.find((s) => s.key === "B")?.body ?? "";
   const summaryParagraph = cleanSentence(
-    summarySection
+    bSection
       .split("\n")
-      .find((line) => line.trim() && !line.trim().startsWith("**")) || "",
+      .find((line) => {
+        const t = line.trim();
+        return t && !t.startsWith("|") && !t.startsWith("#") && !t.startsWith("**") && !t.startsWith(">");
+      }) ?? "",
   );
 
-  const nextSteps = (
-    sections.find((section) => section.key === "F")?.body.match(/^\d+\.\s+.+$/gm) ?? []
-  ).map((line) => cleanSentence(line.replace(/^\d+\.\s+/, "")));
+  // TL;DR from section A role-summary table
+  const aSection = sections.find((s) => s.key === "A")?.body ?? "";
+  const tldr = /\|\s*TL;DR\s*\|\s*(.+?)\s*\|/i.exec(aSection)?.[1]?.trim() ?? "";
+
+  // Personalization suggestions from section E — shown as draft diagnostic notes
+  const eSection = sections.find((s) => s.key === "E")?.body ?? "";
+  const nextSteps = eSection
+    .split("\n")
+    .filter((line) => /^\|\s*\d+\s*\|/.test(line))
+    .slice(0, 3)
+    .map((line) => {
+      const cells = line.split("|").map((c) => c.trim()).filter(Boolean);
+      // Table columns: #, Section, Current State, Proposed Change, Why
+      return cells.length >= 4 ? cleanSentence(cells[3] ?? "") : "";
+    })
+    .filter(Boolean);
+
+  // ATS keywords from the dedicated Keywords section at the bottom of the report
+  const keywordsSection =
+    extractSection(markdown, "Keywords (ATS)") ||
+    extractSection(markdown, "Keywords");
+  const atsKeywords = keywordsSection
+    ? keywordsSection.split(/[,\n]/).map((s) => s.trim()).filter(Boolean)
+    : [];
 
   return {
-    role: titleMatch?.[1]?.trim() ?? "Unknown role",
-    company: titleMatch?.[2]?.trim() ?? "Unknown company",
+    role: titleMatch?.[2]?.trim() ?? "Unknown role",
+    company: titleMatch?.[1]?.trim() ?? "Unknown company",
     score: /\*\*Score:\*\*\s*([0-9.]+)\/5/i.exec(markdown)?.[1] ?? null,
     url: /\*\*URL:\*\*\s*(.+)$/im.exec(markdown)?.[1]?.trim() ?? "",
-    archetype: /Archetype:\s+\*\*(.+?)\*\*/i.exec(markdown)?.[1]?.trim() ?? "",
+    archetype: /\*\*Archetype:\*\*\s+(.+)$/im.exec(markdown)?.[1]?.trim() ?? "",
     summary: summaryParagraph,
+    tldr,
     sections,
     nextSteps,
+    atsKeywords,
   };
 }
 
@@ -460,17 +519,25 @@ function buildSummary(profile, resume, report, tone, variant, override) {
     "Software engineer with hands-on experience building AI systems and delivery-oriented full-stack products.";
 
   const reportSummary = cleanSentence(report.summary || "");
+
+  // Use TL;DR from the report when available — it's a concise role-specific description
+  // written by the evaluator, not a hardcoded template.
+  const roleContext = report.tldr
+    ? cleanSentence(report.tldr).slice(0, 160)
+    : reportSummary;
+
   const roleLine =
-    variant === "technical"
-      ? "Best used for roles that value React delivery, AI tooling familiarity, and hands-on system building."
+    roleContext ||
+    (variant === "technical"
+      ? `Strong fit for ${report.role} at ${report.company} with emphasis on technical depth and AI tooling.`
       : variant === "execution"
-        ? "Strong fit for roles that value shipping, troubleshooting, and turning ambiguous requirements into working systems."
-        : `Targeting ${report.role} roles with strong overlap in frontend delivery, API integration, and AI-assisted product development.`;
+        ? `Strong fit for ${report.role} at ${report.company} with emphasis on delivery and full-stack problem-solving.`
+        : `Targeting ${report.role} at ${report.company} with strong alignment on the core role requirements.`);
 
   const closing =
     tone >= 60
-      ? reportSummary || `Ready to contribute quickly on ${report.company} problems with strong ownership.`
-      : reportSummary;
+      ? (reportSummary && reportSummary !== roleContext ? reportSummary : `Ready to contribute quickly on ${report.company} problems with strong ownership.`)
+      : (reportSummary && reportSummary !== roleContext ? reportSummary : "");
 
   return [base, roleLine, closing].filter(Boolean).slice(0, 3).join(" ");
 }
@@ -540,6 +607,7 @@ function buildDraft({ profile, resume, report, options, source }) {
       id: source.id,
       label: source.label,
       path: source.path,
+      targetRoles: source.targetRoles ?? [],
     },
     opportunity: {
       company: report.company,
