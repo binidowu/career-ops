@@ -37,3 +37,6 @@ bun.lock
 .claude/memory/
 career-dashboard
 package-lock.json
+
+# Career-Ops UI job state
+.career-ops-ui/
