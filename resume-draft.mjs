@@ -94,6 +94,13 @@ function normalizeLines(value) {
     .filter(Boolean);
 }
 
+function parseListItems(section) {
+  return normalizeLines(section)
+    .filter((line) => /^[-•*◦]\s/.test(line))
+    .map((line) => line.replace(/^[-•*◦]\s+/, "").trim())
+    .filter(Boolean);
+}
+
 function unique(items) {
   return [...new Set(items)];
 }
@@ -123,12 +130,89 @@ function scoreText(text, keywords) {
 }
 
 function cleanSentence(value) {
-  return value
+  return String(value)
     .replace(/\|/g, " ")
     .replace(/\*\*(.+?)\*\*/g, "$1")
     .replace(/\[(.+?)\]\((.+?)\)/g, "$1")
     .replace(/\s+/g, " ")
     .trim();
+}
+
+function normalizeEvidenceText(value) {
+  return cleanSentence(value).toLowerCase();
+}
+
+function stableHash(value) {
+  let hash = 0;
+  for (let index = 0; index < value.length; index += 1) {
+    hash = (hash * 31 + value.charCodeAt(index)) >>> 0;
+  }
+  return hash.toString(36);
+}
+
+function evidenceId(sourceId, kind, index, text) {
+  const sourcePart = slugify(sourceId || "resume");
+  const hash = stableHash(`${sourceId}:${kind}:${index}:${normalizeEvidenceText(text)}`);
+  return `evidence_${sourcePart}_${kind}_${index + 1}_${hash}`;
+}
+
+function extractMetrics(value) {
+  return [
+    ...new Set(
+      String(value).match(
+        /(?:\$[0-9,.]+[kKmM]?|\b\d+(?:[,.]\d+)*(?:\.\d+)?%?|\b[0-9,.]+(?:k|m|x)\b)/g,
+      ) ?? [],
+    ),
+  ];
+}
+
+function extractSkills(value) {
+  const skillPatterns = [
+    "AI",
+    "API",
+    "AWS",
+    "Azure",
+    "CSS",
+    "ETL",
+    "Excel",
+    "Figma",
+    "Git",
+    "HTML",
+    "JavaScript",
+    "LangChain",
+    "LLM",
+    "Node",
+    "Power BI",
+    "Python",
+    "RAG",
+    "React",
+    "SQL",
+    "Tableau",
+    "TypeScript",
+  ];
+  const text = String(value);
+  return skillPatterns.filter((skill) =>
+    new RegExp(
+      `(^|[^a-z0-9+#])${skill.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}([^a-z0-9+#]|$)`,
+      "i",
+    ).test(text),
+  );
+}
+
+function extractActions(value) {
+  const actionWords =
+    String(value).match(
+      /\b(?:built|created|developed|implemented|led|managed|designed|automated|optimized|improved|launched|analyzed|supported|delivered|integrated|trained|coordinated|reduced|increased|streamlined)\b/gi,
+    ) ?? [];
+  return [...new Set(actionWords.map((word) => word.toLowerCase()))];
+}
+
+function extractOutcomes(value) {
+  return cleanSentence(value)
+    .split(/;\s+|,\s+(?=(?:improving|reducing|increasing|enabling|supporting|driving)\b)/i)
+    .slice(1)
+    .map((part) => part.trim())
+    .filter(Boolean);
 }
 
 function takeLeadSentences(value, count) {
@@ -154,6 +238,48 @@ function extractSection(markdown, heading) {
     "im",
   );
   return expression.exec(markdown)?.[1]?.trim() ?? "";
+}
+
+const SECTION_ALIASES = {
+  summary: ["Professional Summary", "Summary", "Profile", "About"],
+  experience: [
+    "Work Experience",
+    "Experience",
+    "Professional Experience",
+    "Employment History",
+    "Employment",
+  ],
+  projects: [
+    "Projects",
+    "Selected Work",
+    "Portfolio",
+    "Case Studies",
+    "Personal Projects",
+    "Side Projects",
+  ],
+  education: ["Education", "Academic Background"],
+  skills: [
+    "Skills",
+    "Technical Skills",
+    "Core Skills",
+    "Core Competencies",
+    "Technologies",
+  ],
+  certifications: ["Certifications", "Licenses", "Credentials"],
+  awards: ["Awards", "Honors"],
+  publications: ["Publications"],
+  volunteering: ["Volunteer Experience", "Volunteering", "Community"],
+};
+
+function extractAliasedSection(markdown, aliases) {
+  for (const alias of aliases) {
+    const section = extractSection(markdown, alias);
+    if (section) {
+      return section;
+    }
+  }
+
+  return "";
 }
 
 function parseHeaderContact(markdown) {
@@ -202,9 +328,7 @@ function parseExperiences(section) {
 }
 
 function parseProjects(section) {
-  return normalizeLines(section)
-    .filter((line) => line.startsWith("- "))
-    .map((line) => line.replace(/^- /, "").trim())
+  return parseListItems(section)
     .map((line) => {
       const match = /^\*\*(.+?)\*\*\s+--\s+(.+)$/.exec(line);
 
@@ -220,9 +344,7 @@ function parseProjects(section) {
 }
 
 function parseSkills(section) {
-  return normalizeLines(section)
-    .filter((line) => line.startsWith("- "))
-    .map((line) => line.replace(/^- /, "").trim())
+  return parseListItems(section)
     .map((line) => {
       const match = /^\*\*(.+?):\*\*\s+(.+)$|^\*\*(.+?)\*\*:\s+(.+)$/.exec(line);
 
@@ -247,9 +369,12 @@ function parseSkills(section) {
 }
 
 function parseEducation(section) {
-  return normalizeLines(section)
-    .filter((line) => line.startsWith("- "))
-    .map((line) => line.replace(/^- /, "").trim());
+  return parseListItems(section);
+}
+
+function parseSimpleListSection(section) {
+  const listItems = parseListItems(section);
+  return listItems.length ? listItems : normalizeLines(section);
 }
 
 function parseResumeMarkdown(markdown) {
@@ -261,38 +386,234 @@ function parseResumeMarkdown(markdown) {
   return {
     name: heading,
     contact: parseHeaderContact(markdown),
-    summary:
-      extractSection(markdown, "Professional Summary") ||
-      extractSection(markdown, "Summary") ||
-      extractSection(markdown, "Profile") ||
-      extractSection(markdown, "About"),
-    experiences: parseExperiences(
-      extractSection(markdown, "Work Experience") ||
-      extractSection(markdown, "Experience") ||
-      extractSection(markdown, "Professional Experience") ||
-      extractSection(markdown, "Employment History") ||
-      extractSection(markdown, "Employment"),
+    summary: extractAliasedSection(markdown, SECTION_ALIASES.summary),
+    experiences: parseExperiences(extractAliasedSection(markdown, SECTION_ALIASES.experience)),
+    projects: parseProjects(extractAliasedSection(markdown, SECTION_ALIASES.projects)),
+    education: parseEducation(extractAliasedSection(markdown, SECTION_ALIASES.education)),
+    skills: parseSkills(extractAliasedSection(markdown, SECTION_ALIASES.skills)),
+    certifications: parseSimpleListSection(
+      extractAliasedSection(markdown, SECTION_ALIASES.certifications),
     ),
-    projects: parseProjects(
-      extractSection(markdown, "Projects") ||
-      extractSection(markdown, "Personal Projects") ||
-      extractSection(markdown, "Side Projects") ||
-      "",
+    awards: parseSimpleListSection(extractAliasedSection(markdown, SECTION_ALIASES.awards)),
+    publications: parseSimpleListSection(
+      extractAliasedSection(markdown, SECTION_ALIASES.publications),
     ),
-    education: parseEducation(
-      extractSection(markdown, "Education") ||
-      extractSection(markdown, "Academic Background") ||
-      "",
-    ),
-    skills: parseSkills(
-      extractSection(markdown, "Skills") ||
-      extractSection(markdown, "Technical Skills") ||
-      extractSection(markdown, "Core Skills") ||
-      extractSection(markdown, "Core Competencies") ||
-      extractSection(markdown, "Technologies") ||
-      "",
+    volunteering: parseSimpleListSection(
+      extractAliasedSection(markdown, SECTION_ALIASES.volunteering),
     ),
   };
+}
+
+function createEvidenceItem({ source, kind, index, title, originalText, extra = {} }) {
+  return {
+    id: evidenceId(source.id, kind, index, `${title} ${originalText}`),
+    kind,
+    sourceId: source.id,
+    sourcePath: source.path,
+    title: cleanSentence(title || originalText || kind),
+    skills: extractSkills(`${title} ${originalText}`),
+    actions: extractActions(originalText),
+    outcomes: extractOutcomes(originalText),
+    metrics: extractMetrics(originalText),
+    originalText: cleanSentence(originalText),
+    confidence: originalText ? 0.82 : 0.45,
+    ...extra,
+  };
+}
+
+function buildResumeEvidence(resume, source) {
+  const items = [];
+
+  if (resume.summary) {
+    items.push(
+      createEvidenceItem({
+        source,
+        kind: "summary",
+        index: items.length,
+        title: "Professional summary",
+        originalText: resume.summary,
+      }),
+    );
+  }
+
+  for (const [key, value] of Object.entries(resume.contact)) {
+    if (value) {
+      items.push(
+        createEvidenceItem({
+          source,
+          kind: "contact",
+          index: items.length,
+          title: key,
+          originalText: String(value),
+          extra: { confidence: 0.95, metrics: [] },
+        }),
+      );
+    }
+  }
+
+  for (const experience of resume.experiences) {
+    experience.bullets.forEach((bullet) => {
+      items.push(
+        createEvidenceItem({
+          source,
+          kind: "experience",
+          index: items.length,
+          title: experience.role || experience.company,
+          originalText: bullet,
+          extra: {
+            organization: experience.company,
+            role: experience.role,
+            location: experience.location,
+            startDate: "",
+            endDate: experience.period,
+          },
+        }),
+      );
+    });
+  }
+
+  resume.projects.forEach((project) => {
+    items.push(
+      createEvidenceItem({
+        source,
+        kind: "project",
+        index: items.length,
+        title: project.title,
+        originalText: project.description || project.title,
+      }),
+    );
+  });
+
+  resume.skills.forEach((group) => {
+    group.items.forEach((skill) => {
+      items.push(
+        createEvidenceItem({
+          source,
+          kind: "skill",
+          index: items.length,
+          title: group.label,
+          originalText: skill,
+          extra: { skills: [skill], confidence: 0.9 },
+        }),
+      );
+    });
+  });
+
+  resume.education.forEach((entry) => {
+    items.push(
+      createEvidenceItem({
+        source,
+        kind: "education",
+        index: items.length,
+        title: "Education",
+        originalText: entry,
+        extra: { confidence: 0.9 },
+      }),
+    );
+  });
+
+  const simpleSections = [
+    ["certification", resume.certifications],
+    ["award", resume.awards],
+    ["publication", resume.publications],
+    ["volunteering", resume.volunteering],
+  ];
+
+  simpleSections.forEach(([kind, entries]) => {
+    entries.forEach((entry) => {
+      items.push(
+        createEvidenceItem({
+          source,
+          kind,
+          index: items.length,
+          title: entry,
+          originalText: entry,
+          extra: { confidence: 0.9 },
+        }),
+      );
+    });
+  });
+
+  return items;
+}
+
+function buildEvidenceDiagnostics(resume, evidenceItems, source) {
+  const diagnostics = [];
+
+  if (!Object.values(resume.contact).some(Boolean)) {
+    diagnostics.push({
+      code: "missing_contact_info",
+      severity: "warning",
+      message: "No contact information was parsed from the resume source.",
+      sourceId: source.id,
+    });
+  }
+
+  const extension = source.path.split(".").pop()?.toLowerCase() ?? "";
+  if (!["md", "markdown", "txt"].includes(extension)) {
+    diagnostics.push({
+      code: "unsupported_source_format",
+      severity: "warning",
+      message: "Evidence extraction currently expects normalized markdown or plain text.",
+      sourceId: source.id,
+    });
+  }
+
+  evidenceItems
+    .filter((item) => ["experience", "project"].includes(item.kind))
+    .filter((item) => !item.metrics.length && !item.outcomes.length)
+    .slice(0, 8)
+    .forEach((item) => {
+      diagnostics.push({
+        code: "weak_bullet_without_outcome",
+        severity: "info",
+        message: "Evidence has no parsed metric or outcome signal.",
+        sourceId: source.id,
+        evidenceId: item.id,
+      });
+    });
+
+  const seen = new Map();
+  evidenceItems.forEach((item) => {
+    const key = normalizeEvidenceText(item.originalText);
+    if (!key) {
+      return;
+    }
+    const first = seen.get(key);
+    if (first) {
+      diagnostics.push({
+        code: "duplicate_evidence",
+        severity: "info",
+        message: "Duplicate evidence text was parsed from the resume source.",
+        sourceId: source.id,
+        evidenceId: item.id,
+        duplicateOf: first,
+      });
+      return;
+    }
+    seen.set(key, item.id);
+  });
+
+  return diagnostics;
+}
+
+function findUsedEvidenceIds(evidenceItems, draft) {
+  const draftText = [
+    draft.summary,
+    ...draft.experienceHighlights.flatMap((entry) => entry.bullets),
+    ...draft.projectHighlights.flatMap((project) => [project.title, project.description]),
+    ...draft.educationHighlights,
+    ...draft.skillHighlights.flatMap((group) => group.items),
+  ]
+    .map(normalizeEvidenceText)
+    .join("\n");
+
+  return evidenceItems
+    .filter((item) => {
+      const original = normalizeEvidenceText(item.originalText);
+      return original && draftText.includes(original);
+    })
+    .map((item) => item.id);
 }
 
 function parseReportSections(markdown) {
@@ -817,13 +1138,27 @@ async function main() {
 
   const resume = parseResumeMarkdown(resumeMarkdown);
   const report = parseReportMarkdown(reportMarkdown);
+  const evidenceItems = buildResumeEvidence(resume, source);
+  const evidenceDiagnostics = buildEvidenceDiagnostics(resume, evidenceItems, source);
   const payload = buildDraft({ profile, resume, report, options, source });
+  const usedEvidenceIds = findUsedEvidenceIds(evidenceItems, payload.draft);
   const { html } = renderHtml(payload);
   const htmlOut = await maybeWriteHtml(html, options.htmlOut);
   const pdfOut = await maybeWritePdf(html, payload.draft, options);
 
   const response = {
     ...payload,
+    evidence: {
+      items: evidenceItems,
+      diagnostics: evidenceDiagnostics,
+    },
+    evidenceSummary: {
+      totalEvidenceItems: evidenceItems.length,
+      usedEvidenceItems: usedEvidenceIds.length,
+      warnings: evidenceDiagnostics
+        .filter((diagnostic) => diagnostic.severity === "warning")
+        .map((diagnostic) => diagnostic.message),
+    },
     htmlOut,
     pdfOut,
   };
