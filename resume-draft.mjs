@@ -18,6 +18,7 @@ function parseArgs(argv) {
   const options = {
     format: "letter",
     json: false,
+    rewrite: process.env.RESUME_REWRITE_MODE || "off",
     tone: 50,
     variant: "balanced",
   };
@@ -43,8 +44,15 @@ function parseArgs(argv) {
       case "resume-path":
         options.resumePath = value;
         break;
+      case "opportunity-id":
+        options.opportunityId = value;
+        break;
       case "format":
         options.format = value === "a4" ? "a4" : "letter";
+        break;
+      case "rewrite":
+        options.rewrite =
+          value === "ai" || value === "auto" || value === "off" ? value : "off";
         break;
       case "variant":
         options.variant =
@@ -148,6 +156,10 @@ function stableHash(value) {
     hash = (hash * 31 + value.charCodeAt(index)) >>> 0;
   }
   return hash.toString(36);
+}
+
+function createId(prefix, value) {
+  return `${prefix}_${stableHash(value)}`;
 }
 
 function evidenceId(sourceId, kind, index, text) {
@@ -616,6 +628,1009 @@ function findUsedEvidenceIds(evidenceItems, draft) {
     .map((item) => item.id);
 }
 
+function countPatternMatches(text, patterns) {
+  return patterns.reduce((count, pattern) => {
+    const matches = text.match(pattern);
+    return count + (matches?.length ?? 0);
+  }, 0);
+}
+
+function classifyJobFamily(report) {
+  const text = [
+    report.role,
+    report.archetype,
+    report.summary,
+    report.tldr,
+    ...report.atsKeywords,
+    ...report.sections.map((section) => section.body),
+  ]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+
+  const scores = {
+    software: countPatternMatches(text, [
+      /\bsoftware\b/g,
+      /\bdeveloper\b/g,
+      /\bfrontend\b/g,
+      /\bbackend\b/g,
+      /\bfull[\s-]?stack\b/g,
+      /\breact\b/g,
+      /\bapi\b/g,
+      /\btypescript\b/g,
+    ]),
+    "data/analytics": countPatternMatches(text, [
+      /\bdata\b/g,
+      /\banalytics?\b/g,
+      /\banalyst\b/g,
+      /\bdashboard\b/g,
+      /\bpower\s*bi\b/g,
+      /\bsql\b/g,
+      /\betl\b/g,
+      /\breporting\b/g,
+    ]),
+    "IT/support": countPatternMatches(text, [
+      /\bit support\b/g,
+      /\bhelp\s?desk\b/g,
+      /\btechnical support\b/g,
+      /\btroubleshoot/g,
+      /\bservice desk\b/g,
+      /\bnetwork\b/g,
+    ]),
+    "product/design": countPatternMatches(text, [
+      /\bproduct\b/g,
+      /\bdesign\b/g,
+      /\bux\b/g,
+      /\bui\b/g,
+      /\bfigma\b/g,
+      /\bprototype\b/g,
+    ]),
+    finance: countPatternMatches(text, [
+      /\bfinance\b/g,
+      /\bfinancial\b/g,
+      /\baccounting\b/g,
+      /\binvestment\b/g,
+      /\bbudget\b/g,
+      /\bforecast\b/g,
+    ]),
+    teaching: countPatternMatches(text, [
+      /\bteacher\b/g,
+      /\bteaching\b/g,
+      /\beducation\b/g,
+      /\binstructor\b/g,
+      /\bcurriculum\b/g,
+      /\bstudent\b/g,
+    ]),
+    "healthcare/medical": countPatternMatches(text, [
+      /\bhealthcare\b/g,
+      /\bmedical\b/g,
+      /\bclinical\b/g,
+      /\bpatient\b/g,
+      /\bnursing\b/g,
+      /\blicen[cs]e\b/g,
+    ]),
+    "operations/admin": countPatternMatches(text, [
+      /\boperations?\b/g,
+      /\badministrat/g,
+      /\bcoordinat/g,
+      /\bworkflow\b/g,
+      /\bprocess\b/g,
+      /\bstakeholder\b/g,
+    ]),
+  };
+
+  const [family, score] = Object.entries(scores).sort((left, right) => right[1] - left[1])[0] ?? [
+    "general",
+    0,
+  ];
+
+  return score > 0 ? family : "general";
+}
+
+function createSectionPolicy({ enabled, label, maxItems, maxBulletsPerItem, prominence, reason }) {
+  return {
+    enabled,
+    label,
+    ...(maxItems ? { maxItems } : {}),
+    ...(maxBulletsPerItem ? { maxBulletsPerItem } : {}),
+    prominence,
+    reason,
+  };
+}
+
+function orderEnabledSections(order, policies) {
+  return order.filter((section) => policies[section]?.enabled);
+}
+
+function buildEvidencePlan(evidenceItems, keywords, policies) {
+  return evidenceItems
+    .map((item) => {
+      const sectionType =
+        {
+          award: "awards",
+          certification: "certifications",
+          contact: "contact",
+          education: "education",
+          experience: "experience",
+          project: "projects",
+          publication: "publications",
+          skill: "skills",
+          summary: "summary",
+          volunteering: "volunteering",
+        }[item.kind] ?? item.kind;
+      const score = scoreText(`${item.title} ${item.originalText} ${item.skills.join(" ")}`, keywords);
+      return {
+        evidenceId: item.id,
+        sectionType,
+        score,
+        reason: score > 0 ? "Matches target keywords." : "Available source evidence.",
+      };
+    })
+    .filter((item) => policies[item.sectionType]?.enabled)
+    .sort((left, right) => right.score - left.score)
+    .slice(0, 24);
+}
+
+function buildResumeStrategy({ evidenceItems, keywords, report, resume }) {
+  const jobFamily = classifyJobFamily(report);
+  const hasProjects = resume.projects.length > 0;
+  const hasCertifications = resume.certifications.length > 0;
+  const hasAwards = resume.awards.length > 0;
+  const hasPublications = resume.publications.length > 0;
+  const hasVolunteering = resume.volunteering.length > 0;
+  const warnings = [];
+
+  const technicalRole = ["software", "data/analytics", "IT/support"].includes(jobFamily);
+  const regulatedRole = ["healthcare/medical", "teaching"].includes(jobFamily);
+  const projectLabel =
+    jobFamily === "data/analytics"
+      ? "Selected Analytics Work"
+      : jobFamily === "software"
+        ? "Technical Projects"
+        : jobFamily === "operations/admin"
+          ? "Selected Work"
+          : "Relevant Projects";
+
+  const policies = {
+    summary: createSectionPolicy({
+      enabled: true,
+      label: "Professional Summary",
+      maxItems: 1,
+      prominence: "primary",
+      reason: "Every tailored resume needs a concise target narrative.",
+    }),
+    skills: createSectionPolicy({
+      enabled: resume.skills.length > 0,
+      label: technicalRole ? "Technical Skills" : "Core Skills",
+      maxItems: technicalRole ? 6 : 5,
+      prominence: technicalRole ? "primary" : "secondary",
+      reason: technicalRole
+        ? "Technical and data roles screen heavily on tool and skill overlap."
+        : "Skills support the role narrative without outranking direct experience.",
+    }),
+    projects: createSectionPolicy({
+      enabled: hasProjects,
+      label: projectLabel,
+      maxItems: technicalRole ? 4 : 3,
+      maxBulletsPerItem: 2,
+      prominence: technicalRole ? "primary" : "supporting",
+      reason: hasProjects
+        ? technicalRole
+          ? "Projects are elevated because this target role values proof-of-work."
+          : "Projects are available but should support stronger direct experience."
+        : "Projects are hidden because no project evidence was parsed.",
+    }),
+    experience: createSectionPolicy({
+      enabled: resume.experiences.length > 0,
+      label: regulatedRole ? "Relevant Experience" : "Work Experience",
+      maxItems: jobFamily === "operations/admin" ? 4 : 5,
+      maxBulletsPerItem: technicalRole ? 4 : 5,
+      prominence: technicalRole ? "secondary" : "primary",
+      reason: technicalRole
+        ? "Experience validates delivery history after skills and proof-of-work."
+        : "Direct experience is the strongest screen for this job family.",
+    }),
+    certifications: createSectionPolicy({
+      enabled: hasCertifications,
+      label: jobFamily === "healthcare/medical" ? "Licenses & Certifications" : "Certifications",
+      maxItems: 4,
+      prominence: regulatedRole || jobFamily === "IT/support" ? "primary" : "supporting",
+      reason: hasCertifications
+        ? regulatedRole || jobFamily === "IT/support"
+          ? "Credentials are elevated because this job family often screens for them."
+          : "Credentials are included as supporting evidence."
+        : "Certifications are hidden because no credential evidence was parsed.",
+    }),
+    education: createSectionPolicy({
+      enabled: resume.education.length > 0,
+      label: "Education",
+      maxItems: 3,
+      prominence: jobFamily === "teaching" ? "primary" : "supporting",
+      reason:
+        jobFamily === "teaching"
+          ? "Education is elevated because the target role values formal learning credentials."
+          : "Education supports the resume after stronger role evidence.",
+    }),
+    awards: createSectionPolicy({
+      enabled: hasAwards,
+      label: "Awards",
+      maxItems: 3,
+      prominence: "supporting",
+      reason: hasAwards ? "Awards add differentiated proof." : "Awards are hidden because none were parsed.",
+    }),
+    publications: createSectionPolicy({
+      enabled: hasPublications,
+      label: "Publications",
+      maxItems: 3,
+      prominence: jobFamily === "teaching" ? "secondary" : "supporting",
+      reason: hasPublications
+        ? "Publications add domain credibility."
+        : "Publications are hidden because none were parsed.",
+    }),
+    volunteering: createSectionPolicy({
+      enabled: hasVolunteering,
+      label: "Volunteer Experience",
+      maxItems: 3,
+      prominence: "supporting",
+      reason: hasVolunteering
+        ? "Volunteer work can support values and stakeholder evidence."
+        : "Volunteering is hidden because none was parsed.",
+    }),
+  };
+
+  if (!hasProjects) {
+    warnings.push("No project evidence was parsed, so Projects is disabled.");
+  }
+
+  if (regulatedRole && !hasCertifications) {
+    warnings.push("This job family may value credentials, but no certifications or licenses were parsed.");
+  }
+
+  const orderByFamily = {
+    software: ["summary", "skills", "projects", "experience", "education", "certifications"],
+    "data/analytics": ["summary", "skills", "projects", "experience", "certifications", "education"],
+    "IT/support": ["summary", "skills", "experience", "certifications", "projects", "education"],
+    "product/design": ["summary", "projects", "skills", "experience", "education", "certifications"],
+    finance: ["summary", "skills", "experience", "projects", "certifications", "education"],
+    teaching: ["summary", "certifications", "experience", "education", "publications", "skills", "projects"],
+    "healthcare/medical": ["summary", "certifications", "experience", "education", "skills", "projects"],
+    "operations/admin": ["summary", "experience", "skills", "projects", "certifications", "education"],
+    general: ["summary", "experience", "skills", "projects", "certifications", "education"],
+  };
+  const baseOrder = orderByFamily[jobFamily] ?? orderByFamily.general;
+  const optionalTail = ["awards", "publications", "volunteering"].filter(
+    (section) => !baseOrder.includes(section),
+  );
+  const sectionOrder = orderEnabledSections([...baseOrder, ...optionalTail], policies);
+  const narrativeAngle =
+    report.tldr ||
+    report.summary ||
+    `${report.role} candidate positioned around ${keywords.slice(0, 3).join(", ") || "role fit"}.`;
+
+  return {
+    templateId: "ayo-clean-v1",
+    jobFamily,
+    narrativeAngle: cleanSentence(narrativeAngle),
+    sectionOrder,
+    sectionPolicies: policies,
+    keywordPlan: keywords,
+    evidencePlan: buildEvidencePlan(evidenceItems, keywords, policies),
+    warnings,
+  };
+}
+
+function findEvidenceForText(evidenceItems, text, preferredKinds = []) {
+  const normalizedText = normalizeEvidenceText(text);
+  if (!normalizedText) {
+    return [];
+  }
+
+  const exact = evidenceItems.filter(
+    (item) =>
+      (!preferredKinds.length || preferredKinds.includes(item.kind)) &&
+      normalizeEvidenceText(item.originalText) === normalizedText,
+  );
+  if (exact.length) {
+    return exact.map((item) => item.id);
+  }
+
+  const partial = evidenceItems.filter((item) => {
+    if (preferredKinds.length && !preferredKinds.includes(item.kind)) {
+      return false;
+    }
+    const original = normalizeEvidenceText(item.originalText);
+    return original && (normalizedText.includes(original) || original.includes(normalizedText));
+  });
+
+  return partial.map((item) => item.id).slice(0, 2);
+}
+
+function matchedKeywordsForText(text, keywords) {
+  const haystack = text.toLowerCase();
+  return keywords.filter((keyword) => keyword && haystack.includes(keyword.toLowerCase()));
+}
+
+function createBullet({ prefix, text, evidenceItems, keywords, preferredKinds = [] }) {
+  return {
+    id: createId(`bullet_${prefix}`, text),
+    text,
+    sourceEvidenceIds: findEvidenceForText(evidenceItems, text, preferredKinds),
+    matchedKeywords: matchedKeywordsForText(text, keywords),
+    userEdited: false,
+    locked: false,
+  };
+}
+
+function createTextBlock({ id, text, evidenceItems, keywords }) {
+  return {
+    id,
+    type: "text",
+    text,
+    sourceEvidenceIds: findEvidenceForText(evidenceItems, text, ["summary"]),
+    matchedKeywords: matchedKeywordsForText(text, keywords),
+    userEdited: false,
+    locked: false,
+  };
+}
+
+function sectionPolicy(strategy, type) {
+  return strategy.sectionPolicies[type] ?? {
+    enabled: false,
+    label: type,
+    prominence: "supporting",
+    reason: "No policy available.",
+  };
+}
+
+function buildResumeDocument({ payload, strategy, evidenceItems, options, source }) {
+  const { draft } = payload;
+  const keywordPlan = strategy.keywordPlan ?? [];
+  const now = new Date().toISOString();
+  const opportunityId =
+    options.opportunityId?.trim() ||
+    slugify(basename(options.report || draft.targetLabel, ".md"));
+  const sections = strategy.sectionOrder
+    .map((sectionType, order) => {
+      const policy = sectionPolicy(strategy, sectionType);
+      const section = {
+        id: createId("section", `${sectionType}:${policy.label}`),
+        type: sectionType,
+        label: policy.label,
+        enabled: policy.enabled,
+        order,
+        blocks: [],
+      };
+
+      if (sectionType === "summary") {
+        section.blocks.push(
+          createTextBlock({
+            id: "summary_block",
+            text: draft.summary,
+            evidenceItems,
+            keywords: keywordPlan,
+          }),
+        );
+      }
+
+      if (sectionType === "skills") {
+        draft.skillHighlights
+          .slice(0, policy.maxItems ?? draft.skillHighlights.length)
+          .forEach((group) => {
+            section.blocks.push({
+              id: createId("skill_group", `${group.label}:${group.items.join(",")}`),
+              type: "skillGroup",
+              label: group.label,
+              items: group.items,
+              sourceEvidenceIds: group.items.flatMap((item) =>
+                findEvidenceForText(evidenceItems, item, ["skill"]),
+              ),
+              matchedKeywords: matchedKeywordsForText(group.items.join(" "), keywordPlan),
+              userEdited: false,
+              locked: false,
+            });
+          });
+      }
+
+      if (sectionType === "experience") {
+        draft.experienceHighlights
+          .slice(0, policy.maxItems ?? draft.experienceHighlights.length)
+          .forEach((entry) => {
+            const [role = "", location = "", period = ""] = entry.subheading.split(" · ");
+            section.blocks.push({
+              id: createId("experience", `${entry.heading}:${entry.subheading}`),
+              type: "experience",
+              company: entry.heading,
+              role,
+              location,
+              period,
+              bullets: entry.bullets
+                .slice(0, policy.maxBulletsPerItem ?? entry.bullets.length)
+                .map((bullet) =>
+                  createBullet({
+                    prefix: "experience",
+                    text: bullet,
+                    evidenceItems,
+                    keywords: keywordPlan,
+                    preferredKinds: ["experience"],
+                  }),
+                ),
+              userEdited: false,
+              locked: false,
+            });
+          });
+      }
+
+      if (sectionType === "projects") {
+        draft.projectHighlights
+          .slice(0, policy.maxItems ?? draft.projectHighlights.length)
+          .forEach((project) => {
+            const evidenceIds = findEvidenceForText(
+              evidenceItems,
+              project.description || project.title,
+              ["project"],
+            );
+            section.blocks.push({
+              id: createId("project", `${project.title}:${project.description}`),
+              type: "project",
+              title: project.title,
+              description: project.description,
+              bullets: project.description
+                ? [
+                    createBullet({
+                      prefix: "project",
+                      text: project.description,
+                      evidenceItems,
+                      keywords: keywordPlan,
+                      preferredKinds: ["project"],
+                    }),
+                  ]
+                : [],
+              sourceEvidenceIds: evidenceIds,
+              matchedKeywords: matchedKeywordsForText(
+                `${project.title} ${project.description}`,
+                keywordPlan,
+              ),
+              userEdited: false,
+              locked: false,
+            });
+          });
+      }
+
+      if (sectionType === "education") {
+        draft.educationHighlights
+          .slice(0, policy.maxItems ?? draft.educationHighlights.length)
+          .forEach((entry) => {
+            section.blocks.push({
+              id: createId("education", entry),
+              type: "listItem",
+              text: entry,
+              sourceEvidenceIds: findEvidenceForText(evidenceItems, entry, ["education"]),
+              matchedKeywords: matchedKeywordsForText(entry, keywordPlan),
+              userEdited: false,
+              locked: false,
+            });
+          });
+      }
+
+      if (sectionType === "certifications") {
+        evidenceItems
+          .filter((item) => item.kind === "certification")
+          .slice(0, policy.maxItems ?? 4)
+          .forEach((item) => {
+            section.blocks.push({
+              id: createId("certification", item.id),
+              type: "listItem",
+              text: item.originalText,
+              sourceEvidenceIds: [item.id],
+              matchedKeywords: matchedKeywordsForText(item.originalText, keywordPlan),
+              userEdited: false,
+              locked: false,
+            });
+          });
+      }
+
+      if (["awards", "publications", "volunteering"].includes(sectionType)) {
+        const kindBySection = {
+          awards: "award",
+          publications: "publication",
+          volunteering: "volunteering",
+        };
+        evidenceItems
+          .filter((item) => item.kind === kindBySection[sectionType])
+          .slice(0, policy.maxItems ?? 3)
+          .forEach((item) => {
+            section.blocks.push({
+              id: createId(sectionType, item.id),
+              type: "listItem",
+              text: item.originalText,
+              sourceEvidenceIds: [item.id],
+              matchedKeywords: matchedKeywordsForText(item.originalText, keywordPlan),
+              userEdited: false,
+              locked: false,
+            });
+          });
+      }
+
+      return section;
+    })
+    .filter((section) => section.enabled && section.blocks.length > 0);
+
+  return {
+    id: createId(
+      "resume_doc",
+      `${source.id}:${draft.targetLabel}:${options.variant}:${options.tone}:${now}`,
+    ),
+    opportunityId,
+    resumeSourceIds: [source.id],
+    templateId: "ayo-clean-v1",
+    format: draft.format,
+    status: "draft",
+    name: draft.name,
+    headline: draft.headline,
+    contactLines: draft.contactLines,
+    fileName: draft.fileName,
+    targetLabel: draft.targetLabel,
+    strategy,
+    sections,
+    diagnostics: [],
+    userEdits: [],
+    exportHistory: [],
+    createdAt: now,
+    updatedAt: now,
+  };
+}
+
+function collectDocumentBullets(document) {
+  return document.sections.flatMap((section) =>
+    section.blocks.flatMap((block) => {
+      if (Array.isArray(block.bullets)) {
+        return block.bullets.map((bullet) => ({
+          ...bullet,
+          sectionType: section.type,
+          blockId: block.id,
+        }));
+      }
+      if (block.type === "text" && block.id === "summary_block") {
+        return [{
+          id: block.id,
+          text: block.text,
+          sourceEvidenceIds: block.sourceEvidenceIds,
+          matchedKeywords: block.matchedKeywords,
+          sectionType: section.type,
+          blockId: block.id,
+        }];
+      }
+      return [];
+    }),
+  );
+}
+
+function buildRewriteRequest({ document, evidenceItems, report, strategy }) {
+  const plannedEvidenceIds = new Set(strategy.evidencePlan.map((item) => item.evidenceId));
+  const evidence = evidenceItems
+    .filter((item) => plannedEvidenceIds.has(item.id) || ["summary", "experience", "project"].includes(item.kind))
+    .slice(0, 40)
+    .map((item) => ({
+      id: item.id,
+      kind: item.kind,
+      title: item.title,
+      organization: item.organization,
+      role: item.role,
+      skills: item.skills,
+      metrics: item.metrics,
+      originalText: item.originalText,
+    }));
+
+  return {
+    target: {
+      company: report.company,
+      role: report.role,
+      jobFamily: strategy.jobFamily,
+      mustHaveSkills: strategy.keywordPlan,
+      narrativeAngle: strategy.narrativeAngle,
+    },
+    truthfulnessRules: [
+      "Do not invent employers, tools, dates, degrees, metrics, certifications, or responsibilities.",
+      "Each rewritten bullet must cite at least one supplied sourceEvidenceIds value.",
+      "Keep bullets concise, ATS-readable, and grounded in the original evidence.",
+      "If evidence is weak, improve wording without adding unsupported claims.",
+    ],
+    document: {
+      headline: document.headline,
+      summary: document.sections
+        .find((section) => section.type === "summary")
+        ?.blocks.find((block) => block.id === "summary_block")?.text,
+      bullets: collectDocumentBullets(document).filter((item) => item.id !== "summary_block"),
+    },
+    evidence,
+    outputSchema: {
+      summary: "string, optional rewritten summary",
+      bullets: [
+        {
+          id: "existing bullet id",
+          text: "rewritten bullet text",
+          sourceEvidenceIds: ["evidence ids from the supplied evidence only"],
+          matchedKeywords: ["keywords naturally reflected in the text"],
+          risk: "none|unsupported|needs_review",
+        },
+      ],
+    },
+  };
+}
+
+function extractJsonObject(value) {
+  const text = String(value || "").trim();
+  try {
+    return JSON.parse(text);
+  } catch {
+    const match = /\{[\s\S]*\}/.exec(text);
+    if (!match) {
+      throw new Error("AI response did not contain a JSON object.");
+    }
+    return JSON.parse(match[0]);
+  }
+}
+
+async function callOpenAiRewrite(request) {
+  const apiKey = process.env.OPENAI_API_KEY;
+  if (!apiKey) {
+    return null;
+  }
+
+  const model = process.env.RESUME_REWRITE_MODEL || process.env.OPENAI_MODEL || "gpt-4o-mini";
+  const response = await fetch("https://api.openai.com/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      model,
+      temperature: 0.25,
+      response_format: { type: "json_object" },
+      messages: [
+        {
+          role: "system",
+          content:
+            "You rewrite resumes truthfully. Return only valid JSON matching the requested schema.",
+        },
+        {
+          role: "user",
+          content: JSON.stringify(request),
+        },
+      ],
+    }),
+  });
+
+  if (!response.ok) {
+    throw new Error(`OpenAI rewrite request failed with HTTP ${response.status}.`);
+  }
+
+  const payload = await response.json();
+  const content = payload?.choices?.[0]?.message?.content;
+  if (!content) {
+    throw new Error("OpenAI rewrite response did not include message content.");
+  }
+
+  return {
+    provider: "openai",
+    model,
+    payload: extractJsonObject(content),
+  };
+}
+
+async function callAnthropicRewrite(request) {
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  if (!apiKey) {
+    return null;
+  }
+
+  const model = process.env.RESUME_REWRITE_MODEL || process.env.ANTHROPIC_MODEL || "claude-3-5-haiku-latest";
+  const response = await fetch("https://api.anthropic.com/v1/messages", {
+    method: "POST",
+    headers: {
+      "x-api-key": apiKey,
+      "anthropic-version": "2023-06-01",
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      model,
+      max_tokens: 3000,
+      temperature: 0.25,
+      system:
+        "You rewrite resumes truthfully. Return only valid JSON matching the requested schema.",
+      messages: [
+        {
+          role: "user",
+          content: JSON.stringify(request),
+        },
+      ],
+    }),
+  });
+
+  if (!response.ok) {
+    throw new Error(`Anthropic rewrite request failed with HTTP ${response.status}.`);
+  }
+
+  const payload = await response.json();
+  const content = payload?.content
+    ?.map((part) => (part.type === "text" ? part.text : ""))
+    .join("\n");
+  if (!content) {
+    throw new Error("Anthropic rewrite response did not include text content.");
+  }
+
+  return {
+    provider: "anthropic",
+    model,
+    payload: extractJsonObject(content),
+  };
+}
+
+function validateRewritePayload(payload, document, evidenceItems) {
+  const diagnostics = [];
+  const evidenceIds = new Set(evidenceItems.map((item) => item.id));
+  const bulletIds = new Set(collectDocumentBullets(document).map((bullet) => bullet.id));
+  const bullets = Array.isArray(payload?.bullets) ? payload.bullets : [];
+
+  const validBullets = bullets
+    .filter((bullet) => {
+      if (!bullet || typeof bullet.id !== "string" || !bulletIds.has(bullet.id)) {
+        diagnostics.push({
+          code: "ai_rewrite_unknown_bullet",
+          severity: "warning",
+          message: "AI returned a rewrite for an unknown bullet id.",
+        });
+        return false;
+      }
+      if (typeof bullet.text !== "string" || !bullet.text.trim()) {
+        diagnostics.push({
+          code: "ai_rewrite_empty_text",
+          severity: "warning",
+          message: `AI returned empty text for bullet ${bullet.id}.`,
+        });
+        return false;
+      }
+      const sourceEvidenceIds = Array.isArray(bullet.sourceEvidenceIds)
+        ? bullet.sourceEvidenceIds.filter((id) => typeof id === "string" && evidenceIds.has(id))
+        : [];
+      if (!sourceEvidenceIds.length) {
+        diagnostics.push({
+          code: "ai_rewrite_missing_evidence",
+          severity: "warning",
+          message: `AI rewrite for bullet ${bullet.id} did not cite valid evidence.`,
+        });
+        return false;
+      }
+      return true;
+    })
+    .map((bullet) => ({
+      id: bullet.id,
+      text: cleanSentence(bullet.text),
+      sourceEvidenceIds: bullet.sourceEvidenceIds.filter((id) => evidenceIds.has(id)),
+      matchedKeywords: Array.isArray(bullet.matchedKeywords)
+        ? bullet.matchedKeywords.filter((keyword) => typeof keyword === "string")
+        : [],
+      risk: bullet.risk === "unsupported" || bullet.risk === "needs_review" ? bullet.risk : "none",
+    }));
+
+  if (payload?.summary !== undefined && typeof payload.summary !== "string") {
+    diagnostics.push({
+      code: "ai_rewrite_invalid_summary",
+      severity: "warning",
+      message: "AI returned a non-string summary rewrite.",
+    });
+  }
+
+  validBullets
+    .filter((bullet) => bullet.risk !== "none")
+    .forEach((bullet) => {
+      diagnostics.push({
+        code: "ai_rewrite_needs_review",
+        severity: "warning",
+        message: `AI marked bullet ${bullet.id} as ${bullet.risk}.`,
+      });
+    });
+
+  return {
+    diagnostics,
+    summary: typeof payload?.summary === "string" ? cleanSentence(payload.summary) : null,
+    bullets: validBullets,
+  };
+}
+
+function applyRewriteToDocument(document, rewrite) {
+  const bulletMap = new Map(rewrite.bullets.map((bullet) => [bullet.id, bullet]));
+  const rewrittenSections = document.sections.map((section) => ({
+    ...section,
+    blocks: section.blocks.map((block) => {
+      if (block.id === "summary_block" && rewrite.summary) {
+        return {
+          ...block,
+          text: rewrite.summary,
+          userEdited: false,
+        };
+      }
+
+      if (!Array.isArray(block.bullets)) {
+        return block;
+      }
+
+      return {
+        ...block,
+        bullets: block.bullets.map((bullet) => {
+          const replacement = bulletMap.get(bullet.id);
+          if (!replacement) {
+            return bullet;
+          }
+          return {
+            ...bullet,
+            text: replacement.text,
+            sourceEvidenceIds: replacement.sourceEvidenceIds,
+            matchedKeywords: replacement.matchedKeywords,
+            userEdited: false,
+          };
+        }),
+      };
+    }),
+  }));
+
+  return {
+    ...document,
+    sections: rewrittenSections,
+    diagnostics: [...document.diagnostics, ...rewrite.diagnostics],
+    updatedAt: new Date().toISOString(),
+  };
+}
+
+async function maybeRewriteDocument({ document, evidenceItems, options, report, strategy }) {
+  const rewriteMode = options.rewrite || "off";
+  const diagnostics = [];
+
+  if (rewriteMode === "off") {
+    diagnostics.push({
+      code: "ai_rewrite_skipped",
+      severity: "info",
+      message: "AI rewrite skipped; deterministic structured document returned.",
+    });
+    return {
+      document: {
+        ...document,
+        diagnostics: [...document.diagnostics, ...diagnostics],
+      },
+      rewrite: {
+        mode: rewriteMode,
+        provider: null,
+        model: null,
+        status: "skipped",
+        diagnostics,
+      },
+    };
+  }
+
+  const request = buildRewriteRequest({ document, evidenceItems, report, strategy });
+
+  try {
+    const result =
+      (await callOpenAiRewrite(request)) ||
+      (await callAnthropicRewrite(request));
+
+    if (!result) {
+      diagnostics.push({
+        code: "ai_rewrite_unavailable",
+        severity: rewriteMode === "ai" ? "warning" : "info",
+        message:
+          "AI rewrite unavailable because OPENAI_API_KEY or ANTHROPIC_API_KEY is not configured.",
+      });
+      return {
+        document: {
+          ...document,
+          diagnostics: [...document.diagnostics, ...diagnostics],
+        },
+        rewrite: {
+          mode: rewriteMode,
+          provider: null,
+          model: null,
+          status: "fallback",
+          diagnostics,
+        },
+      };
+    }
+
+    const validated = validateRewritePayload(result.payload, document, evidenceItems);
+    const rewrittenDocument = applyRewriteToDocument(document, validated);
+    return {
+      document: rewrittenDocument,
+      rewrite: {
+        mode: rewriteMode,
+        provider: result.provider,
+        model: result.model,
+        status: validated.bullets.length || validated.summary ? "applied" : "fallback",
+        diagnostics: validated.diagnostics,
+      },
+    };
+  } catch (error) {
+    diagnostics.push({
+      code: "ai_rewrite_failed",
+      severity: "warning",
+      message: error instanceof Error ? error.message : "AI rewrite failed; fallback document returned.",
+    });
+    return {
+      document: {
+        ...document,
+        diagnostics: [...document.diagnostics, ...diagnostics],
+      },
+      rewrite: {
+        mode: rewriteMode,
+        provider: null,
+        model: null,
+        status: "fallback",
+        diagnostics,
+      },
+    };
+  }
+}
+
+function draftStorageRelativePath(document, fileName = `${document.id}.json`) {
+  return join(
+    "resume-drafts",
+    slugify(document.opportunityId || "opportunity"),
+    slugify(document.resumeSourceIds[0] || "resume"),
+    fileName,
+  );
+}
+
+async function persistResumeDraftDocument({ document, evidence, evidenceSummary, rewrite, source }) {
+  const storageRecord = {
+    document,
+    evidence,
+    evidenceSummary,
+    rewrite,
+    resumeSource: source,
+    persistedAt: new Date().toISOString(),
+    schemaVersion: 1,
+  };
+  const draftRelativePath = draftStorageRelativePath(document);
+  const latestRelativePath = draftStorageRelativePath(document, "latest.json");
+  const indexRelativePath = join(
+    "resume-drafts",
+    slugify(document.opportunityId || "opportunity"),
+    "latest.json",
+  );
+  const draftPath = resolve(projectRoot, draftRelativePath);
+  const latestPath = resolve(projectRoot, latestRelativePath);
+  const indexPath = resolve(projectRoot, indexRelativePath);
+
+  mkdirSync(dirname(draftPath), { recursive: true });
+  mkdirSync(dirname(indexPath), { recursive: true });
+
+  await writeFile(draftPath, JSON.stringify(storageRecord, null, 2), "utf8");
+  await writeFile(latestPath, JSON.stringify(storageRecord, null, 2), "utf8");
+  await writeFile(
+    indexPath,
+    JSON.stringify(
+      {
+        draftId: document.id,
+        draftPath: draftRelativePath,
+        latestPath: latestRelativePath,
+        opportunityId: document.opportunityId,
+        resumeSourceIds: document.resumeSourceIds,
+        targetLabel: document.targetLabel,
+        updatedAt: document.updatedAt,
+      },
+      null,
+      2,
+    ),
+    "utf8",
+  );
+
+  return {
+    draftPath: draftRelativePath,
+    latestPath: latestRelativePath,
+    indexPath: indexRelativePath,
+  };
+}
+
 function parseReportSections(markdown) {
   // Match "## A) Heading" or "## A — Heading" or "## A – Heading" formats
   const matches = [...markdown.matchAll(/^##\s+([A-Z])\s*[)—–\-]\s*(.+)$/gm)];
@@ -664,8 +1679,12 @@ function extractReportKeywords(report, resume) {
 
 function parseReportMarkdown(markdown) {
   // Title format: "# Evaluation: Company — Role" (company first, then role after dash)
-  const titleMatch =
-    /^#\s+Evaluation[:\s]+(.+?)\s+[—–]\s+(.+)$/m.exec(markdown);
+  const titleMatch = /^#\s+Evaluation:\s+(.+?)\s+[—–]\s+(.+)$/m.exec(markdown);
+  const evaluationReportTitleMatch =
+    /^#\s+Evaluation Report\s+[—–-]\s+(.+?)\s+@\s+(.+)$/m.exec(markdown);
+  const numberedTitleMatch =
+    /^#\s+\d+\s+[—–-]\s+(.+?)\s+[—–-]\s+(.+)$/m.exec(markdown);
+  const simpleCompanyRoleMatch = /^#\s+(.+?)\s+--\s+(.+)$/m.exec(markdown);
 
   const sections = parseReportSections(markdown);
 
@@ -706,8 +1725,18 @@ function parseReportMarkdown(markdown) {
     : [];
 
   return {
-    role: titleMatch?.[2]?.trim() ?? "Unknown role",
-    company: titleMatch?.[1]?.trim() ?? "Unknown company",
+    role:
+      titleMatch?.[2]?.trim() ??
+      evaluationReportTitleMatch?.[1]?.trim() ??
+      numberedTitleMatch?.[2]?.trim() ??
+      simpleCompanyRoleMatch?.[2]?.trim() ??
+      "Unknown role",
+    company:
+      titleMatch?.[1]?.trim() ??
+      evaluationReportTitleMatch?.[2]?.trim() ??
+      numberedTitleMatch?.[1]?.trim() ??
+      simpleCompanyRoleMatch?.[1]?.trim() ??
+      "Unknown company",
     score: /\*\*Score:\*\*\s*([0-9.]+)\/5/i.exec(markdown)?.[1] ?? null,
     url: /\*\*URL:\*\*\s*(.+)$/im.exec(markdown)?.[1]?.trim() ?? "",
     archetype: /\*\*Archetype:\*\*\s+(.+)$/im.exec(markdown)?.[1]?.trim() ?? "",
@@ -1140,25 +2169,59 @@ async function main() {
   const report = parseReportMarkdown(reportMarkdown);
   const evidenceItems = buildResumeEvidence(resume, source);
   const evidenceDiagnostics = buildEvidenceDiagnostics(resume, evidenceItems, source);
+  const keywordPlan = extractReportKeywords(report, resume);
+  const strategy = buildResumeStrategy({
+    evidenceItems,
+    keywords: keywordPlan,
+    report,
+    resume,
+  });
   const payload = buildDraft({ profile, resume, report, options, source });
   const usedEvidenceIds = findUsedEvidenceIds(evidenceItems, payload.draft);
+  const deterministicDocument = buildResumeDocument({
+    payload,
+    strategy,
+    evidenceItems,
+    options,
+    source,
+  });
+  const rewritten = await maybeRewriteDocument({
+    document: deterministicDocument,
+    evidenceItems,
+    options,
+    report,
+    strategy,
+  });
   const { html } = renderHtml(payload);
   const htmlOut = await maybeWriteHtml(html, options.htmlOut);
   const pdfOut = await maybeWritePdf(html, payload.draft, options);
+  const evidence = {
+    items: evidenceItems,
+    diagnostics: evidenceDiagnostics,
+  };
+  const evidenceSummary = {
+    totalEvidenceItems: evidenceItems.length,
+    usedEvidenceItems: usedEvidenceIds.length,
+    warnings: evidenceDiagnostics
+      .filter((diagnostic) => diagnostic.severity === "warning")
+      .map((diagnostic) => diagnostic.message),
+  };
+  const persistence = await persistResumeDraftDocument({
+    document: rewritten.document,
+    evidence,
+    evidenceSummary,
+    rewrite: rewritten.rewrite,
+    source: payload.resumeSource,
+  });
 
   const response = {
     ...payload,
-    evidence: {
-      items: evidenceItems,
-      diagnostics: evidenceDiagnostics,
-    },
-    evidenceSummary: {
-      totalEvidenceItems: evidenceItems.length,
-      usedEvidenceItems: usedEvidenceIds.length,
-      warnings: evidenceDiagnostics
-        .filter((diagnostic) => diagnostic.severity === "warning")
-        .map((diagnostic) => diagnostic.message),
-    },
+    evidence,
+    evidenceSummary,
+    strategy,
+    document: rewritten.document,
+    rewrite: rewritten.rewrite,
+    persistence,
     htmlOut,
     pdfOut,
   };
@@ -1171,6 +2234,8 @@ async function main() {
   console.log(`Resume source: ${source.label} (${source.path})`);
   console.log(`Target role: ${payload.opportunity.role} @ ${payload.opportunity.company}`);
   console.log(`Variant: ${payload.draft.variant} · Tone: ${payload.draft.tone}`);
+  console.log(`Rewrite: ${rewritten.rewrite.status}`);
+  console.log(`Draft: ${persistence.draftPath}`);
   if (htmlOut) {
     console.log(`HTML: ${htmlOut}`);
   }

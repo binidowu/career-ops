@@ -1,7 +1,92 @@
 {
   "002-trendai-2026-04-15": {
     "coverLetterNotes": "I want the job",
-    "outreachDraft": "Hi I appplied",
-    "appliedDate": "2026-04-22"
+    "outreachChannel": "twitter",
+    "outreachDrafts": {
+      "linkedin": "Hi I appplied",
+      "email": "",
+      "twitter": ""
+    },
+    "outreachDraft": "",
+    "appliedDate": "2026-04-22",
+    "privateNotes": "",
+    "targetContact": {
+      "name": "",
+      "title": "",
+      "linkedin": "",
+      "email": ""
+    },
+    "activity": [
+      {
+        "ts": "2026-04-15T13:00:00.000Z",
+        "event": "Evaluation report generated",
+        "actor": "Backend",
+        "kind": "evaluation-run"
+      },
+      {
+        "ts": "2026-05-08T19:12:42.646Z",
+        "event": "Status moved to Interview",
+        "actor": "You",
+        "kind": "status-change"
+      },
+      {
+        "ts": "2026-05-10T04:19:53.465Z",
+        "event": "Tailored resume exported (ayomide-adebayo-trendai.pdf)",
+        "actor": "Resume Studio",
+        "kind": "resume-generated"
+      }
+    ]
+  },
+  "001-furniture-bank-2026-04-15": {
+    "coverLetterNotes": "",
+    "outreachChannel": "linkedin",
+    "outreachDrafts": {
+      "linkedin": "",
+      "email": "",
+      "twitter": ""
+    },
+    "outreachDraft": "",
+    "appliedDate": null,
+    "privateNotes": "",
+    "targetContact": {
+      "name": "",
+      "title": "",
+      "linkedin": "",
+      "email": ""
+    },
+    "activity": [
+      {
+        "ts": "2026-04-15T13:00:00.000Z",
+        "event": "Evaluation report generated",
+        "actor": "Backend",
+        "kind": "evaluation-run"
+      }
+    ]
+  },
+  "005-polyai-2026-03-16": {
+    "coverLetterNotes": "",
+    "outreachChannel": "linkedin",
+    "outreachDrafts": {
+      "linkedin": "",
+      "email": "",
+      "twitter": ""
+    },
+    "outreachDraft": "",
+    "appliedDate": null,
+    "privateNotes": "",
+    "targetContact": {
+      "name": "",
+      "title": "",
+      "linkedin": "",
+      "email": ""
+    },
+    "activity": [
+      {
+        "ts": "2026-03-16T13:00:00.000Z",
+        "event": "Evaluation report generated",
+        "actor": "Backend",
+        "kind": "evaluation-run"
+      }
+    ]
   }
 }

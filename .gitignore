@@ -6,6 +6,8 @@ reports/*.md
 !reports/.gitkeep
 output/*
 !output/.gitkeep
+resume-drafts/*
+!resume-drafts/.gitkeep
 batch/logs/*
 !batch/logs/.gitkeep
 batch/batch-state.tsv

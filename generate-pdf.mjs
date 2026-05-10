@@ -79,10 +79,14 @@ async function generatePDF() {
 
   // Parse arguments
   let inputPath, outputPath, format = 'a4';
+  let scale = 1.0;
 
   for (const arg of args) {
     if (arg.startsWith('--format=')) {
       format = arg.split('=')[1].toLowerCase();
+    } else if (arg.startsWith('--scale=')) {
+      const parsed = parseFloat(arg.split('=')[1]);
+      if (!isNaN(parsed) && parsed > 0.1 && parsed <= 2.0) scale = parsed;
     } else if (!inputPath) {
       inputPath = arg;
     } else if (!outputPath) {
@@ -91,7 +95,7 @@ async function generatePDF() {
   }
 
   if (!inputPath || !outputPath) {
-    console.error('Usage: node generate-pdf.mjs <input.html> <output.pdf> [--format=letter|a4]');
+    console.error('Usage: node generate-pdf.mjs <input.html> <output.pdf> [--format=letter|a4] [--scale=0.1-2.0]');
     process.exit(1);
   }
 
@@ -150,6 +154,7 @@ async function generatePDF() {
     const pdfBuffer = await page.pdf({
       format: format,
       printBackground: true,
+      scale: scale,
       margin: {
         top: '0.6in',
         right: '0.6in',
